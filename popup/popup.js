@@ -1,4 +1,4 @@
-// QuoteFB Popup Logic - Persistent WhatsApp Collector with Auto-Scroll
+// QuoteFB Popup Logic - WhatsApp Harvester with Streamlined Controls
 
 document.addEventListener('DOMContentLoaded', () => {
   const statusBadge = document.getElementById('status-badge');
@@ -7,14 +7,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnClearQuery = document.getElementById('btn-clear-query');
   
   const countTotalCollected = document.getElementById('count-total-collected');
+  const countArchivedSub = document.getElementById('count-archived-sub');
   const countVisible = document.getElementById('count-visible');
   const countDuplicate = document.getElementById('count-duplicate');
   const countNonWA = document.getElementById('count-nonwa');
   
-  const btnToggleAutoscroll = document.getElementById('btn-toggle-autoscroll');
-  const btnCopyLinks = document.getElementById('btn-copy-links');
-  const btnExportTxt = document.getElementById('btn-export-txt');
+  const btnStartHarvest = document.getElementById('btn-start-harvest');
+  const harvestSplitControls = document.getElementById('harvest-split-controls');
+  const btnPauseHarvest = document.getElementById('btn-pause-harvest');
+  const btnResumeHarvest = document.getElementById('btn-resume-harvest');
+  const btnStopHarvest = document.getElementById('btn-stop-harvest');
+  
+  const feedbackBanner = document.getElementById('popup-feedback-banner');
   const btnResetLinks = document.getElementById('btn-reset-links');
+  const btnClearArchive = document.getElementById('btn-clear-archive');
   
   const toggleEnabled = document.getElementById('toggle-enabled');
   const toggleRequireWA = document.getElementById('toggle-require-wa');
@@ -23,7 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let activeTabId = null;
   let cachedCollectedLinks = [];
-  let isAutoScrolling = false;
+  let cachedArchivedLinks = [];
 
   // 1. Query active tab
   if (typeof chrome !== 'undefined' && chrome.tabs) {
@@ -61,7 +67,14 @@ document.addEventListener('DOMContentLoaded', () => {
   function loadFromStorage() {
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.get(
-        ['enabled', 'requireWhatsAppLink', 'onlyUniqueWhatsApp', 'customQuery', 'quotefb_collected_links'],
+        [
+          'enabled',
+          'requireWhatsAppLink',
+          'onlyUniqueWhatsApp',
+          'customQuery',
+          'quotefb_collected_links',
+          'quotefb_archived_links',
+        ],
         (items) => {
           if (items.enabled !== undefined) toggleEnabled.checked = items.enabled;
           if (items.requireWhatsAppLink !== undefined) toggleRequireWA.checked = items.requireWhatsAppLink;
@@ -73,18 +86,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
           if (Array.isArray(items.quotefb_collected_links)) {
             cachedCollectedLinks = items.quotefb_collected_links;
-            updateButtonsAndCount(cachedCollectedLinks.length);
           }
+          if (Array.isArray(items.quotefb_archived_links)) {
+            cachedArchivedLinks = items.quotefb_archived_links;
+          }
+          updateCounts(cachedCollectedLinks.length, cachedArchivedLinks.length);
         }
       );
     }
   }
 
-  function updateButtonsAndCount(count) {
-    countTotalCollected.textContent = count;
-    btnCopyLinks.disabled = count === 0;
-    btnExportTxt.disabled = count === 0;
-    btnCopyLinks.textContent = count > 0 ? `📋 Copy ${count} Clean Link${count === 1 ? '' : 's'}` : '📋 Copy All Clean Links';
+  function updateCounts(newCount, archivedCount) {
+    countTotalCollected.textContent = newCount;
+    if (countArchivedSub) {
+      countArchivedSub.textContent = `📦 ${archivedCount} previously copied & archived`;
+    }
+  }
+
+  function showBanner(text, isSuccess = false) {
+    if (!feedbackBanner) return;
+    if (!text) {
+      feedbackBanner.style.display = 'none';
+      return;
+    }
+    feedbackBanner.textContent = text;
+    feedbackBanner.className = isSuccess ? 'feedback-banner success' : 'feedback-banner';
+    feedbackBanner.style.display = 'block';
   }
 
   function applyStateToUI(state) {
@@ -97,25 +124,50 @@ document.addEventListener('DOMContentLoaded', () => {
     countNonWA.textContent = state.currentNonWAOnScreen ?? 0;
 
     cachedCollectedLinks = state.collectedLinks || [];
-    updateButtonsAndCount(cachedCollectedLinks.length);
+    cachedArchivedLinks = state.archivedLinks || [];
+    updateCounts(cachedCollectedLinks.length, cachedArchivedLinks.length);
 
-    isAutoScrolling = Boolean(state.isAutoScrolling);
-    if (state.reachedEnd) {
-      statusBadge.className = 'status-indicator';
-      statusBadge.style.background = '#fef3c7';
-      statusBadge.style.color = '#b45309';
-      statusText.textContent = '🏁 Reached End of Results';
-    } else if (isAutoScrolling) {
-      statusBadge.className = 'status-indicator active';
-      statusText.textContent = '⚡ Auto-Scrolling...';
+    const isScrolling = Boolean(state.isAutoScrolling);
+    const isPaused = Boolean(state.isPaused);
+
+    // Streamlined Harvest Buttons
+    if (!isScrolling) {
+      btnStartHarvest.style.display = 'flex';
+      harvestSplitControls.style.display = 'none';
+    } else {
+      btnStartHarvest.style.display = 'none';
+      harvestSplitControls.style.display = 'grid';
+
+      if (isPaused) {
+        btnPauseHarvest.style.display = 'none';
+        btnResumeHarvest.style.display = 'flex';
+      } else {
+        btnPauseHarvest.style.display = 'flex';
+        btnResumeHarvest.style.display = 'none';
+      }
     }
 
-    if (isAutoScrolling) {
-      btnToggleAutoscroll.className = 'btn-autoscroll-main active';
-      btnToggleAutoscroll.textContent = '⏹️ Stop Auto-Scroll (Active)';
+    // Status Badge & Banner
+    if (state.reachedEnd) {
+      statusBadge.className = 'status-indicator paused';
+      statusText.textContent = '🏁 Reached End of Results';
+      showBanner('🏁 Reached End of Results (Paused)');
+    } else if (isScrolling) {
+      if (isPaused) {
+        statusBadge.className = 'status-indicator paused';
+        statusText.textContent = '⏸️ Harvesting Paused';
+        showBanner('⏸️ Harvesting is paused. Click Resume or Stop & Copy.');
+      } else {
+        statusBadge.className = 'status-indicator active';
+        statusText.textContent = '⚡ Harvesting Active...';
+        showBanner('⚡ Auto-scrolling and collecting unique WhatsApp links...');
+      }
     } else {
-      btnToggleAutoscroll.className = 'btn-autoscroll-main';
-      btnToggleAutoscroll.textContent = '▶️ Start Auto-Scroll & Collect';
+      if (state.lastActionFeedback) {
+        showBanner(state.lastActionFeedback, state.lastActionFeedback.startsWith('✅'));
+      } else {
+        showBanner('');
+      }
     }
 
     if (state.customQuery) {
@@ -148,11 +200,50 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Event Listeners
-  btnToggleAutoscroll.addEventListener('click', () => {
+  // Streamlined Harvest Event Listeners
+  btnStartHarvest.addEventListener('click', () => {
     if (activeTabId && typeof chrome !== 'undefined' && chrome.tabs) {
-      chrome.tabs.sendMessage(activeTabId, { type: 'TOGGLE_AUTOSCROLL' }, (res) => {
+      chrome.tabs.sendMessage(activeTabId, { type: 'START_HARVEST' }, (res) => {
         if (res) applyStateToUI(res);
+      });
+    }
+  });
+
+  btnPauseHarvest.addEventListener('click', () => {
+    if (activeTabId && typeof chrome !== 'undefined' && chrome.tabs) {
+      chrome.tabs.sendMessage(activeTabId, { type: 'PAUSE_HARVEST' }, (res) => {
+        if (res) applyStateToUI(res);
+      });
+    }
+  });
+
+  btnResumeHarvest.addEventListener('click', () => {
+    if (activeTabId && typeof chrome !== 'undefined' && chrome.tabs) {
+      chrome.tabs.sendMessage(activeTabId, { type: 'RESUME_HARVEST' }, (res) => {
+        if (res) applyStateToUI(res);
+      });
+    }
+  });
+
+  // Stop & Copy Automatically
+  btnStopHarvest.addEventListener('click', () => {
+    if (activeTabId && typeof chrome !== 'undefined' && chrome.tabs) {
+      chrome.tabs.sendMessage(activeTabId, { type: 'STOP_AND_COPY' }, (res) => {
+        if (res) applyStateToUI(res);
+      });
+    } else if (cachedCollectedLinks.length > 0) {
+      const sortedLinks = [...cachedCollectedLinks].sort((a, b) => a.localeCompare(b));
+      navigator.clipboard.writeText(sortedLinks.join('\n')).then(() => {
+        const combined = Array.from(new Set([...cachedArchivedLinks, ...cachedCollectedLinks]));
+        chrome.storage.local.set({
+          quotefb_collected_links: [],
+          quotefb_archived_links: combined,
+        }, () => {
+          cachedArchivedLinks = combined;
+          cachedCollectedLinks = [];
+          updateCounts(0, combined.length);
+          showBanner(`✅ Stopped & Copied ${sortedLinks.length} Links!`, true);
+        });
       });
     }
   });
@@ -185,45 +276,37 @@ document.addEventListener('DOMContentLoaded', () => {
     updateSettings({ customQuery: '' });
   });
 
-  btnCopyLinks.addEventListener('click', () => {
-    if (cachedCollectedLinks.length === 0) return;
-    // Sorted alphabetically, line by line
-    const sortedLinks = [...cachedCollectedLinks].sort((a, b) => a.localeCompare(b));
-    const textToCopy = sortedLinks.join('\n');
-    navigator.clipboard.writeText(textToCopy).then(() => {
-      const orig = btnCopyLinks.textContent;
-      btnCopyLinks.textContent = '✅ Copied to Clipboard!';
-      setTimeout(() => {
-        btnCopyLinks.textContent = orig;
-      }, 2000);
-    });
-  });
-
-  btnExportTxt.addEventListener('click', () => {
-    if (cachedCollectedLinks.length === 0) return;
-    // Sorted alphabetically, line by line
-    const sortedLinks = [...cachedCollectedLinks].sort((a, b) => a.localeCompare(b));
-    const blob = new Blob([sortedLinks.join('\n')], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `whatsapp_groups_${new Date().toISOString().slice(0, 10)}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  });
-
+  // Clear current batch
   btnResetLinks.addEventListener('click', () => {
-    if (confirm('Clear all collected WhatsApp links and start fresh?')) {
-      if (activeTabId && typeof chrome !== 'undefined' && chrome.tabs) {
-        chrome.tabs.sendMessage(activeTabId, { type: 'CLEAR_LINKS' }, (res) => {
-          if (res) applyStateToUI(res);
-        });
-      } else if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({ quotefb_collected_links: [] }, () => {
-          cachedCollectedLinks = [];
-          updateButtonsAndCount(0);
-        });
-      }
+    if (activeTabId && typeof chrome !== 'undefined' && chrome.tabs) {
+      chrome.tabs.sendMessage(activeTabId, { type: 'CLEAR_CURRENT' }, (res) => {
+        if (res) applyStateToUI(res);
+      });
+    } else if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ quotefb_collected_links: [] }, () => {
+        cachedCollectedLinks = [];
+        updateCounts(0, cachedArchivedLinks.length);
+        showBanner('🗑️ Cleared new links queue');
+      });
+    }
+  });
+
+  // Clear permanent archive history
+  btnClearArchive.addEventListener('click', () => {
+    if (activeTabId && typeof chrome !== 'undefined' && chrome.tabs) {
+      chrome.tabs.sendMessage(activeTabId, { type: 'CLEAR_ALL_HISTORY' }, (res) => {
+        if (res) applyStateToUI(res);
+      });
+    } else if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({
+        quotefb_collected_links: [],
+        quotefb_archived_links: [],
+      }, () => {
+        cachedCollectedLinks = [];
+        cachedArchivedLinks = [];
+        updateCounts(0, 0);
+        showBanner('🗑️ Reset full copy history');
+      });
     }
   });
 });

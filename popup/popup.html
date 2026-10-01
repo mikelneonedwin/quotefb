@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>QuoteFB - WhatsApp Group Filter</title>
+  <title>QuoteFB - WhatsApp Group Harvester</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
         <img src="../icons/icon48.png" alt="QuoteFB" class="logo">
         <div>
           <h1>QuoteFB</h1>
-          <p class="subtitle">WhatsApp Group Collector</p>
+          <p class="subtitle">WhatsApp Group Harvester</p>
         </div>
       </div>
       <div class="status-indicator" id="status-badge">
@@ -27,24 +27,31 @@
       <div class="hero-card">
         <div class="hero-left">
           <div class="hero-number" id="count-total-collected">0</div>
-          <div class="hero-label">Unique Normalized Links</div>
+          <div class="hero-label">New Unique Links</div>
+          <div class="hero-sub" id="count-archived-sub">📦 0 previously copied & archived</div>
         </div>
-        <button class="btn-sm-danger" id="btn-reset-links" title="Clear all collected links">Reset</button>
+        <button class="btn-sm-danger" id="btn-reset-links" title="Clear current new links">Clear</button>
       </div>
 
-      <!-- Auto-Scroll Master Button -->
-      <button class="btn-autoscroll-main" id="btn-toggle-autoscroll">
-        ▶️ Start Auto-Scroll & Collect
-      </button>
+      <!-- Action Feedback Banner -->
+      <div class="feedback-banner" id="popup-feedback-banner" style="display: none;"></div>
 
-      <!-- Action Buttons -->
-      <div class="actions-grid">
-        <button class="btn-action-primary" id="btn-copy-links" disabled>
-          📋 Copy All Links
+      <!-- Streamlined Harvest Controls -->
+      <div class="harvest-master-box">
+        <button class="btn-harvest-master btn-start-master" id="btn-start-harvest">
+          ▶️ Start Harvesting
         </button>
-        <button class="btn-action-secondary" id="btn-export-txt" disabled title="Download clean links as .txt file">
-          💾 Export .txt
-        </button>
+        <div class="harvest-split-controls" id="harvest-split-controls" style="display: none;">
+          <button class="btn-harvest-master btn-pause-action" id="btn-pause-harvest">
+            ⏸️ Pause
+          </button>
+          <button class="btn-harvest-master btn-resume-action" id="btn-resume-harvest" style="display: none;">
+            ▶️ Resume
+          </button>
+          <button class="btn-harvest-master btn-stop-action" id="btn-stop-harvest">
+            ⏹️ Stop & Copy
+          </button>
+        </div>
       </div>
 
       <!-- Feed Counters -->
@@ -78,7 +85,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-name">Filter Active</span>
-            <span class="setting-desc">Hide non-matching and duplicate posts on screen</span>
+            <span class="setting-desc">Actively hides non-matching posts from search feed</span>
           </div>
           <label class="switch">
             <input type="checkbox" id="toggle-enabled" checked>
@@ -89,7 +96,7 @@
         <div class="setting-item">
           <div class="setting-info">
             <span class="setting-name">Require WhatsApp Link</span>
-            <span class="setting-desc">Hide posts that lack a chat.whatsapp.com invite</span>
+            <span class="setting-desc">Hide posts lacking a chat.whatsapp.com invite</span>
           </div>
           <label class="switch">
             <input type="checkbox" id="toggle-require-wa" checked>
@@ -99,13 +106,17 @@
 
         <div class="setting-item">
           <div class="setting-info">
-            <span class="setting-name">Deduplicate Links</span>
-            <span class="setting-desc">Keep only 1 post per unique WhatsApp group</span>
+            <span class="setting-name">Never Repeat Copied Links</span>
+            <span class="setting-desc">Hide duplicates & previously copied links forever</span>
           </div>
           <label class="switch">
             <input type="checkbox" id="toggle-unique" checked>
             <span class="slider"></span>
           </label>
+        </div>
+
+        <div class="history-actions">
+          <button class="btn-link-danger" id="btn-clear-archive">🗑️ Reset Full Copy History / Archive</button>
         </div>
       </div>
     </main>

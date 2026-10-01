@@ -1,23 +1,27 @@
 # QuoteFB - Facebook Persistent Unique WhatsApp Group Link Harvester
 
-A lightweight Manifest V3 Chrome Extension that automatically scrolls Facebook search feeds, filters out clutter, and **continuously collects unique normalized WhatsApp group invite links (`chat.whatsapp.com`)**.
+A lightweight Manifest V3 Chrome Extension that automatically scrolls Facebook search feeds, actively filters out clutter, and **continuously collects unique normalized WhatsApp group invite links (`chat.whatsapp.com`) without ever repeating previously copied links**.
 
 ---
 
 ## Key Features
 
-- **Automated Hands-Free Auto-Scroll**:
-  - Automatically scrolls down the feed at balanced intervals to let Facebook's GraphQL feed load continuously.
-  - Can be started/stopped with one click from the in-page floating widget or toolbar popup, or stopped instantly by pressing `Escape`.
-- **Persistent Link Collection**:
-  - Accumulates clean unique links in `chrome.storage.local` across all scrolls and page transitions without losing links when posts are unmounted by Facebook's virtual DOM.
+- **Always Active Across Facebook**:
+  - The floating harvester stays active across all groups, search queries, feeds, and pages on Facebook without ever disappearing or wiping collected links.
+  - Seamlessly hop from group to group while your link counter continues accumulating new unique links.
+- **Copy-Archive System (Never Repeats Copied Links)**:
+  - When you click **"Copy & Archive"** (or Export), the copied links are automatically saved to your permanent archive (`quotefb_archived_links`).
+  - Next time you search or scroll on Facebook, the extension recognizes previously copied links and automatically filters out their posts.
+- **Streamlined Workflow (Start / Pause / Resume / Stop & Copy)**:
+  - **Start**: Click **"▶️ Start Harvesting"** to begin auto-scrolling and collecting unique links.
+  - **Pause**: Click **"⏸️ Pause"** or press <kbd>P</kbd> to freeze harvesting in place.
+  - **Auto-Pause on End of Results**: Automatically pauses when Facebook's feed displays *"End of results"*, preserving all harvested links.
+  - **Resume**: Click **"▶️ Resume"** or press <kbd>P</kbd> to continue scrolling and harvesting.
+  - **Stop & Copy**: Click **"⏹️ Stop & Copy"** or press <kbd>Esc</kbd> to halt and automatically sort and copy all clean links (A-Z) to your clipboard, saving them directly into your permanent archive.
 - **Strict URL Normalization**:
   - Strips all tracking queries (`?fbclid=...`, `?context=...`, `?mode=...`) and unwraps `l.facebook.com` redirects into clean canonical `https://chat.whatsapp.com/<INVITE_CODE>` links.
-- **Real-Time Deduplication**:
-  - Only keeps the first post per unique WhatsApp invite link; hides subsequent duplicate spam posts.
-- **Alphabetical 1-Click Export**:
-  - **Copy All Clean Links**: Copies all unique normalized links sorted in **alphabetical order**, one per line, directly to your clipboard.
-  - **Export .txt**: Downloads an alphabetically sorted text file of all collected groups.
+- **Alphabetical Export**:
+  - Automatically sorts all links from A to Z, line by line, before placing them on your clipboard or saving to `.txt`.
 
 ---
 
@@ -34,6 +38,7 @@ A lightweight Manifest V3 Chrome Extension that automatically scrolls Facebook s
 ## How to Use
 
 1. Go to Facebook Search Posts (e.g., [facebook.com/search/posts/?q=whatsapp+group+link](https://www.facebook.com/search/posts/?q=whatsapp+group+link)).
-2. Click **"▶️ Auto-Scroll & Grab Links"** in the bottom-right widget or extension popup.
-3. The extension will scroll the page automatically, filter out non-WhatsApp and duplicate posts, and harvest all unique clean links.
-4. When done, press `Escape` or click **"⏹️ Stop Auto-Scroll"**, then click **"📋 Copy All Clean Links"** or **"💾 Export .txt"**.
+2. Click **"▶️ Auto-Scroll & Grab Links"** in the bottom-right floating widget or in the extension popup.
+3. The extension will scroll the page automatically, filter out non-WhatsApp and duplicate posts, and harvest new unique clean links.
+4. When finished (or stopped at "End of Results"), click **"📋 Copy & Archive Links"** or **"💾 Export .txt"**.
+5. All copied links are copied alphabetically to your clipboard and permanently recorded into your copy history so they will never appear again in future searches.

@@ -1,4 +1,4 @@
-// QuoteFB - Facebook Persistent Unique WhatsApp Group Invite Filter with Auto-Scroll
+// QuoteFB - Facebook Persistent Unique WhatsApp Group Invite Filter with Streamlined Controls
 // Content Script (Manifest V3)
 
 (function () {
@@ -10,6 +10,7 @@
 
   // Global persistent storage keys
   const STORAGE_LINKS_KEY = 'quotefb_collected_links';
+  const STORAGE_ARCHIVED_KEY = 'quotefb_archived_links';
 
   // In-memory state
   const state = {
@@ -21,22 +22,28 @@
     widgetCollapsed: false,
     activeQuery: '',
     
-    // Auto-Scroll state
+    // Auto-Scroll & Pause/Resume state
     isAutoScrolling: false,
-    scrollIntervalMs: 1800, // Balanced interval to allow Facebook GraphQL feed fetch
+    isPaused: false,
+    scrollIntervalMs: 1800,
+    reachedEnd: false,
     
-    // Counters
+    // Counters on current active screen
     currentVisibleOnScreen: 0,
     currentDuplicatesOnScreen: 0,
     currentNonWAOnScreen: 0,
     
-    // Persistent collected unique links across the entire scrolling/browsing session
-    collectedLinks: [], // Array of normalized string URLs: ['https://chat.whatsapp.com/...']
-    isSearchPage: false,
+    // Persistent uncopied session batch across ALL Facebook pages and groups
+    collectedLinks: [], // Array of normalized string URLs
+    
+    // Permanent history of previously copied/exported links
+    archivedLinks: [],
+    lastActionFeedback: '',
   };
 
-  // Set of codes for fast O(1) deduplication
+  // Sets of codes for fast O(1) deduplication
   const persistentSeenCodes = new Set();
+  const archivedCodes = new Set();
 
   let scanDebounceTimer = null;
   let observer = null;
@@ -48,7 +55,16 @@
   function loadPersistentData(callback) {
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.get(
-        ['enabled', 'requireWhatsAppLink', 'onlyUniqueWhatsApp', 'caseSensitive', 'customQuery', 'widgetCollapsed', STORAGE_LINKS_KEY],
+        [
+          'enabled',
+          'requireWhatsAppLink',
+          'onlyUniqueWhatsApp',
+          'caseSensitive',
+          'customQuery',
+          'widgetCollapsed',
+          STORAGE_LINKS_KEY,
+          STORAGE_ARCHIVED_KEY,
+        ],
         (items) => {
           if (items.enabled !== undefined) state.enabled = items.enabled;
           if (items.requireWhatsAppLink !== undefined) state.requireWhatsAppLink = items.requireWhatsAppLink;
@@ -57,8 +73,26 @@
           if (items.customQuery !== undefined) state.customQuery = items.customQuery;
           if (items.widgetCollapsed !== undefined) state.widgetCollapsed = items.widgetCollapsed;
 
+          // 1. Load Archived History
+          archivedCodes.clear();
+          if (Array.isArray(items[STORAGE_ARCHIVED_KEY])) {
+            state.archivedLinks = items[STORAGE_ARCHIVED_KEY];
+            state.archivedLinks.forEach((url) => {
+              const parsed = normalizeWhatsAppUrl(url);
+              if (parsed) {
+                archivedCodes.add(parsed.code);
+                persistentSeenCodes.add(parsed.code);
+              }
+            });
+          }
+
+          // 2. Load Uncopied Current Batch
           if (Array.isArray(items[STORAGE_LINKS_KEY])) {
-            state.collectedLinks = items[STORAGE_LINKS_KEY];
+            state.collectedLinks = items[STORAGE_LINKS_KEY].filter((url) => {
+              const parsed = normalizeWhatsAppUrl(url);
+              return parsed && !archivedCodes.has(parsed.code);
+            });
+
             state.collectedLinks.forEach((url) => {
               const parsed = normalizeWhatsAppUrl(url);
               if (parsed) persistentSeenCodes.add(parsed.code);
@@ -79,31 +113,61 @@
     }
   }
 
-  function persistCollectedLinks() {
+  function persistAllData() {
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.set({ [STORAGE_LINKS_KEY]: state.collectedLinks });
+      chrome.storage.local.set({
+        [STORAGE_LINKS_KEY]: state.collectedLinks,
+        [STORAGE_ARCHIVED_KEY]: state.archivedLinks,
+      });
     }
   }
 
-  function clearAllCollectedLinks() {
-    persistentSeenCodes.clear();
+  function archiveCurrentLinks() {
+    if (state.collectedLinks.length === 0) return;
+
+    state.collectedLinks.forEach((url) => {
+      const parsed = normalizeWhatsAppUrl(url);
+      if (parsed) {
+        archivedCodes.add(parsed.code);
+        persistentSeenCodes.add(parsed.code);
+        if (!state.archivedLinks.includes(url)) {
+          state.archivedLinks.push(url);
+        }
+      }
+    });
+
     state.collectedLinks = [];
-    persistCollectedLinks();
+    persistAllData();
     filterPosts();
     renderOverlayHTML();
   }
 
-  // --- 2. AUTO-SCROLL ENGINE & END OF RESULTS DETECTION ---
+  function clearAllData(includeArchive = false) {
+    if (includeArchive) {
+      archivedCodes.clear();
+      state.archivedLinks = [];
+    }
+    persistentSeenCodes.clear();
+    state.archivedLinks.forEach((url) => {
+      const parsed = normalizeWhatsAppUrl(url);
+      if (parsed) persistentSeenCodes.add(parsed.code);
+    });
+
+    state.collectedLinks = [];
+    persistAllData();
+    filterPosts();
+    renderOverlayHTML();
+  }
+
+  // --- 2. STREAMLINED HARVESTING ENGINE (START / PAUSE / RESUME / STOP & COPY) ---
 
   let stuckCounter = 0;
   let lastScrollHeight = 0;
 
   function checkEndOfResults() {
-    // 1. Text-based detection for Facebook's end-of-feed markers
     const mainEl = document.querySelector('div[role="main"]') || document.querySelector('div[role="feed"]') || document.body;
     if (mainEl) {
       const text = mainEl.innerText || '';
-      // Common Facebook search termination phrases
       if (
         /end of results/i.test(text) ||
         /no more results/i.test(text) ||
@@ -113,7 +177,6 @@
       }
     }
 
-    // 2. Physical scroll bottom detection (stuck at bottom with no new content loading)
     const isAtBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 150;
     const currentHeight = document.documentElement.scrollHeight;
 
@@ -130,53 +193,51 @@
     return false;
   }
 
-  function startAutoScroll() {
-    if (state.isAutoScrolling) return;
-    state.isAutoScrolling = true;
-    stuckCounter = 0;
-    lastScrollHeight = document.documentElement.scrollHeight;
-    state.reachedEnd = false;
-    renderOverlayHTML();
+  function performScrollStep() {
+    if (!state.isAutoScrolling || state.isPaused) return;
 
-    function performScrollStep() {
-      if (!state.isAutoScrolling) return;
-
-      // Check if End of Results has been reached
-      if (checkEndOfResults()) {
-        state.reachedEnd = true;
-        stopAutoScroll();
-        updateOverlayUI();
-        return;
-      }
-
-      // Scroll smoothly down the page
-      const scrollAmount = Math.floor(window.innerHeight * 0.85);
-      window.scrollBy({
-        top: scrollAmount,
-        behavior: 'smooth',
-      });
-
-      // Check again after scrolling
-      setTimeout(() => {
-        if (state.isAutoScrolling && checkEndOfResults()) {
-          state.reachedEnd = true;
-          stopAutoScroll();
-          updateOverlayUI();
-          return;
-        }
-      }, 600);
-
-      // Schedule next scroll step with a small natural jitter
-      const jitter = Math.floor(Math.random() * 300) - 150;
-      const nextDelay = Math.max(1200, state.scrollIntervalMs + jitter);
-      autoScrollTimer = setTimeout(performScrollStep, nextDelay);
+    // When reaching the end of results, pause automatically
+    if (checkEndOfResults()) {
+      state.reachedEnd = true;
+      pauseHarvesting();
+      showFeedback('🏁 Reached End of Results (Paused)');
+      return;
     }
 
+    const scrollAmount = Math.floor(window.innerHeight * 0.85);
+    window.scrollBy({
+      top: scrollAmount,
+      behavior: 'smooth',
+    });
+
+    setTimeout(() => {
+      if (state.isAutoScrolling && !state.isPaused && checkEndOfResults()) {
+        state.reachedEnd = true;
+        pauseHarvesting();
+        showFeedback('🏁 Reached End of Results (Paused)');
+        return;
+      }
+    }, 600);
+
+    const jitter = Math.floor(Math.random() * 300) - 150;
+    const nextDelay = Math.max(1200, state.scrollIntervalMs + jitter);
+    autoScrollTimer = setTimeout(performScrollStep, nextDelay);
+  }
+
+  function startHarvesting() {
+    state.isAutoScrolling = true;
+    state.isPaused = false;
+    state.reachedEnd = false;
+    stuckCounter = 0;
+    lastScrollHeight = document.documentElement.scrollHeight;
+    showFeedback('');
+    renderOverlayHTML();
     performScrollStep();
   }
 
-  function stopAutoScroll() {
-    state.isAutoScrolling = false;
+  function pauseHarvesting() {
+    if (!state.isAutoScrolling) return;
+    state.isPaused = true;
     if (autoScrollTimer) {
       clearTimeout(autoScrollTimer);
       autoScrollTimer = null;
@@ -184,26 +245,75 @@
     renderOverlayHTML();
   }
 
-  function toggleAutoScroll() {
-    if (state.isAutoScrolling) {
-      stopAutoScroll();
+  function resumeHarvesting() {
+    if (!state.isAutoScrolling) {
+      startHarvesting();
+      return;
+    }
+    state.isPaused = false;
+    state.reachedEnd = false;
+    showFeedback('');
+    renderOverlayHTML();
+    performScrollStep();
+    scheduleScan();
+  }
+
+  function stopAndCopy() {
+    state.isAutoScrolling = false;
+    state.isPaused = false;
+    if (autoScrollTimer) {
+      clearTimeout(autoScrollTimer);
+      autoScrollTimer = null;
+    }
+
+    const countToCopy = state.collectedLinks.length;
+    if (countToCopy > 0) {
+      const sortedLinks = [...state.collectedLinks].sort((a, b) => a.localeCompare(b));
+      const textToCopy = sortedLinks.join('\n');
+      
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        showFeedback(`✅ Stopped & Copied ${countToCopy} Links!`);
+        archiveCurrentLinks();
+      }).catch(() => {
+        showFeedback(`✅ Stopped (${countToCopy} Links Ready)`);
+        archiveCurrentLinks();
+      });
     } else {
-      startAutoScroll();
+      showFeedback('⏹️ Stopped (No new links)');
+      renderOverlayHTML();
     }
   }
 
-  // Stop auto-scroll on Escape key press
+  function showFeedback(text) {
+    state.lastActionFeedback = text;
+    renderOverlayHTML();
+    if (text && text.startsWith('✅')) {
+      setTimeout(() => {
+        if (state.lastActionFeedback === text) {
+          state.lastActionFeedback = '';
+          renderOverlayHTML();
+        }
+      }, 4000);
+    }
+  }
+
   window.addEventListener('keydown', (e) => {
+    if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable) {
+      return;
+    }
+
     if (e.key === 'Escape' && state.isAutoScrolling) {
-      stopAutoScroll();
+      stopAndCopy();
+    } else if (e.key.toLowerCase() === 'p' && state.isAutoScrolling) {
+      if (state.isPaused) {
+        resumeHarvesting();
+      } else {
+        pauseHarvesting();
+      }
     }
   });
 
-  // --- 3. URL & SEARCH QUERY DETECTION ---
-
-  function checkIsSearchPage() {
-    return window.location.pathname.startsWith('/search') || window.location.pathname.includes('/search/');
-  }
+  // --- 3. URL, GROUP & SEARCH QUERY DETECTION ---
 
   function extractUrlSearchQuery() {
     try {
@@ -213,6 +323,34 @@
     } catch {
       return '';
     }
+  }
+
+  function isGenericWhatsAppQuery(query) {
+    if (!query) return true;
+    const q = query.toLowerCase().trim();
+    const genericTerms = [
+      'chat.whatsapp.com',
+      'https://chat.whatsapp.com',
+      'http://chat.whatsapp.com',
+      'whatsapp.com',
+      'whatsapp',
+      'wa.me',
+      'whatsapp group',
+      'whatsapp groups',
+      'whatsapp link',
+      'whatsapp group link',
+      'whatsapp group links',
+      'chat whatsapp',
+      'chat whatsapp com',
+    ];
+    return (
+      genericTerms.includes(q) ||
+      q.startsWith('chat.whatsapp.com') ||
+      q.startsWith('https://chat.whatsapp.com') ||
+      q.startsWith('http://chat.whatsapp.com') ||
+      q.includes('chat.whatsapp.com') ||
+      q === 'whatsapp group'
+    );
   }
 
   function getEffectiveQuery() {
@@ -236,18 +374,19 @@
   function normalizeWhatsAppUrl(rawStr) {
     if (!rawStr) return null;
 
-    // 1. Group Invite regex: chat.whatsapp.com/(invite/)?<code...>
-    const groupMatch = rawStr.match(/chat\.whatsapp\.com\/(?:invite\/)?([a-zA-Z0-9_-]{10,32})/i);
+    // Clean common Facebook wrappers, spaces or artifacts
+    const cleaned = rawStr.replace(/[\s\r\n]+/g, '');
+
+    const groupMatch = cleaned.match(/chat\.whatsapp\.com\/(?:invite\/)?([a-zA-Z0-9_-]{10,32})/i);
     if (groupMatch && groupMatch[1]) {
       const code = groupMatch[1];
       return {
         code: code,
-        url: `https://chat.whatsapp.com/${code}`, // Strictly normalized without any query parameters
+        url: `https://chat.whatsapp.com/${code}`,
       };
     }
 
-    // 2. wa.me short link invite: wa.me/(invite/)?<code...>
-    const waMatch = rawStr.match(/wa\.me\/(?:invite\/)?([a-zA-Z0-9_-]{10,32})/i);
+    const waMatch = cleaned.match(/wa\.me\/(?:invite\/)?([a-zA-Z0-9_-]{10,32})/i);
     if (waMatch && waMatch[1] && isNaN(Number(waMatch[1]))) {
       const code = waMatch[1];
       return {
@@ -262,13 +401,20 @@
   function extractFromHref(href) {
     if (!href) return '';
     let targetUrl = href;
-    if (href.includes('l.facebook.com/l.php')) {
-      try {
-        const parsed = new URL(href, window.location.origin);
-        const u = parsed.searchParams.get('u');
-        if (u) targetUrl = decodeURIComponent(u);
-      } catch {
-        // use raw href
+    try {
+      if (targetUrl.includes('l.facebook.com/l.php') || targetUrl.includes('/l.php?')) {
+        const urlObj = new URL(targetUrl, window.location.origin);
+        const u = urlObj.searchParams.get('u');
+        if (u) {
+          targetUrl = decodeURIComponent(u);
+        }
+      }
+    } catch {
+      const match = targetUrl.match(/[?&]u=([^&]+)/);
+      if (match) {
+        try {
+          targetUrl = decodeURIComponent(match[1]);
+        } catch {}
       }
     }
     return targetUrl;
@@ -287,23 +433,47 @@
   function extractNormalizedWhatsAppLinks(card) {
     const found = new Map();
 
-    const anchors = card.querySelectorAll('a[href]');
-    anchors.forEach((a) => {
-      const rawHref = a.getAttribute('href') || '';
-      const resolved = extractFromHref(rawHref);
-      if (resolved) {
-        const parsed = normalizeWhatsAppUrl(resolved);
-        if (parsed) {
-          found.set(parsed.code, parsed.url);
+    // 1. Scan all interactive elements & attributes (href, data-lynx-uri, data-href, aria-label, title)
+    const elements = card.querySelectorAll('a, [data-lynx-uri], [data-href], [aria-label], [title]');
+    elements.forEach((el) => {
+      const rawValues = [
+        el.getAttribute('href'),
+        el.getAttribute('data-lynx-uri'),
+        el.getAttribute('data-href'),
+        el.getAttribute('aria-label'),
+        el.getAttribute('title'),
+      ].filter(Boolean);
+
+      for (const raw of rawValues) {
+        const resolved = extractFromHref(raw);
+        if (resolved) {
+          const parsed = normalizeWhatsAppUrl(resolved);
+          if (parsed) {
+            found.set(parsed.code, parsed.url);
+          }
         }
       }
     });
 
+    // 2. Scan full card text (innerText + textContent + accessible text)
     const text = (card.innerText || '') + ' ' + (card.textContent || '') + ' ' + getAccessibleText(card);
-    const regex = /(?:https?:\/\/)?(?:www\.)?chat\.whatsapp\.com\/(?:invite\/)?([a-zA-Z0-9_-]{10,32})/gi;
+    
+    // Normalize potential obfuscation like "chat . whatsapp . com"
+    const deobfuscated = text.replace(/chat\s*\.\s*whatsapp\s*\.\s*com\s*\/\s*(?:invite\/)?\s*([a-zA-Z0-9_-]{10,32})/gi, 'chat.whatsapp.com/$1');
+    
+    const groupRegex = /(?:https?:\/\/)?(?:www\.)?chat\.whatsapp\.com\/(?:invite\/)?([a-zA-Z0-9_-]{10,32})/gi;
     let match;
-    while ((match = regex.exec(text)) !== null) {
+    while ((match = groupRegex.exec(deobfuscated)) !== null) {
       const parsed = normalizeWhatsAppUrl(match[0]);
+      if (parsed) {
+        found.set(parsed.code, parsed.url);
+      }
+    }
+
+    const waRegex = /(?:https?:\/\/)?(?:www\.)?wa\.me\/(?:invite\/)?([a-zA-Z0-9_-]{10,32})/gi;
+    let waMatch;
+    while ((waMatch = waRegex.exec(deobfuscated)) !== null) {
+      const parsed = normalizeWhatsAppUrl(waMatch[0]);
       if (parsed) {
         found.set(parsed.code, parsed.url);
       }
@@ -312,40 +482,52 @@
     return Array.from(found.entries()).map(([code, url]) => ({ code, url }));
   }
 
-  // --- 5. DOM POST SELECTION & FILTERING ---
+  // --- 5. ROBUST DOM POST SELECTION & ACTIVELY FILTERING POSTS ---
 
   function findPostContainers() {
+    // Strategy 1: Standard articles
     const articles = Array.from(document.querySelectorAll('div[role="article"]'));
     if (articles.length > 0) {
       return articles.filter((art) => !art.parentElement.closest('div[role="article"]'));
     }
 
+    // Strategy 2: Group search results & feed unit pagelets
+    const pagelets = Array.from(document.querySelectorAll('div[data-pagelet*="GroupSearchResults"], div[data-pagelet*="FeedUnit"], div[data-pagelet*="SearchResults"]'));
+    if (pagelets.length > 0) {
+      return pagelets;
+    }
+
+    // Strategy 3: Feed direct or secondary children
     const feed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="main"]');
     if (feed) {
       const children = Array.from(feed.children);
-      return children.filter((child) => {
+      const validChildren = children.filter((child) => {
         return child.innerText && child.innerText.trim().length > 15 && child.getAttribute('role') !== 'navigation';
       });
+      if (validChildren.length > 0) {
+        return validChildren;
+      }
+      if (children.length === 1 && children[0].children.length > 1) {
+        const subChildren = Array.from(children[0].children).filter((c) => {
+          return c.innerText && c.innerText.trim().length > 15 && c.getAttribute('role') !== 'navigation';
+        });
+        if (subChildren.length > 0) {
+          return subChildren;
+        }
+      }
     }
 
     return [];
   }
 
   function filterPosts() {
-    state.isSearchPage = checkIsSearchPage();
     state.activeQuery = getEffectiveQuery();
-
-    if (!state.isSearchPage) {
-      if (state.isAutoScrolling) stopAutoScroll();
-      removeFilterOverlay();
-      return;
-    }
-
     ensureFilterOverlay();
 
     const posts = findPostContainers();
     const query = state.activeQuery;
-    const normalizedQuery = normalizeText(query, state.caseSensitive);
+    const isTopicFilter = query && !isGenericWhatsAppQuery(query);
+    const normalizedTopicQuery = normalizeText(query, state.caseSensitive);
 
     let visibleCount = 0;
     let duplicateCount = 0;
@@ -361,6 +543,7 @@
         return;
       }
 
+      // 1. WhatsApp Link Extraction
       const waLinks = extractNormalizedWhatsAppLinks(post);
       const hasWaLink = waLinks.length > 0;
 
@@ -372,13 +555,14 @@
         return;
       }
 
-      if (normalizedQuery) {
+      // 2. Specific Topic Filter (only if user provided a specific topic like "Crypto", not generic "chat.whatsapp.com")
+      if (isTopicFilter) {
         const visibleText = post.innerText || post.textContent || '';
         const ariaText = getAccessibleText(post);
         const combinedText = visibleText + ' ' + ariaText;
         const normalizedPostText = normalizeText(combinedText, state.caseSensitive);
 
-        if (!normalizedPostText.includes(normalizedQuery)) {
+        if (!normalizedPostText.includes(normalizedTopicQuery)) {
           post.classList.add('quotefb-hidden');
           post.classList.remove('quotefb-matched');
           removeWABadges(post);
@@ -387,6 +571,7 @@
         }
       }
 
+      // 3. Deduplication & Unseen check
       if (state.requireWhatsAppLink && state.onlyUniqueWhatsApp && hasWaLink) {
         const cardSeenCode = post.dataset.quotefbCode;
         const freshLinks = waLinks.filter((l) => !persistentSeenCodes.has(l.code));
@@ -399,11 +584,13 @@
           return;
         }
 
-        freshLinks.forEach((l) => {
-          persistentSeenCodes.add(l.code);
-          state.collectedLinks.push(l.url);
-          newlyDiscoveredLinks++;
-        });
+        if (!state.isPaused) {
+          freshLinks.forEach((l) => {
+            persistentSeenCodes.add(l.code);
+            state.collectedLinks.push(l.url);
+            newlyDiscoveredLinks++;
+          });
+        }
 
         if (waLinks[0]) {
           post.dataset.quotefbCode = waLinks[0].code;
@@ -415,13 +602,15 @@
         visibleCount++;
       } else {
         if (hasWaLink) {
-          waLinks.forEach((l) => {
-            if (!persistentSeenCodes.has(l.code)) {
-              persistentSeenCodes.add(l.code);
-              state.collectedLinks.push(l.url);
-              newlyDiscoveredLinks++;
-            }
-          });
+          if (!state.isPaused) {
+            waLinks.forEach((l) => {
+              if (!persistentSeenCodes.has(l.code)) {
+                persistentSeenCodes.add(l.code);
+                state.collectedLinks.push(l.url);
+                newlyDiscoveredLinks++;
+              }
+            });
+          }
           attachWABadges(post, waLinks);
         }
         post.classList.remove('quotefb-hidden');
@@ -435,7 +624,7 @@
     state.currentNonWAOnScreen = nonWaCount;
 
     if (newlyDiscoveredLinks > 0) {
-      persistCollectedLinks();
+      persistAllData();
     }
 
     updateOverlayUI();
@@ -523,6 +712,10 @@
         animation: pulse 1.5s infinite;
         background: #15803d;
       }
+      .panel.collapsed.paused {
+        background: #d97706;
+        box-shadow: 0 4px 18px rgba(217, 119, 6, 0.5);
+      }
       @keyframes pulse {
         0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 211, 102, 0.7); }
         70% { transform: scale(1.06); box-shadow: 0 0 0 12px rgba(37, 211, 102, 0); }
@@ -551,6 +744,10 @@
         background: #f0fdf4;
         border-bottom: 1px solid #bbf7d0;
       }
+      .header.paused-header {
+        background: #fffbeb;
+        border-color: #fde68a;
+      }
       .title-wrap {
         display: flex;
         align-items: center;
@@ -558,6 +755,9 @@
         font-weight: 700;
         color: #15803d;
         font-size: 13px;
+      }
+      .title-wrap.paused-title {
+        color: #b45309;
       }
       .btn-icon {
         background: transparent;
@@ -605,6 +805,11 @@
         font-weight: 600;
         color: #166534;
       }
+      .archived-info {
+        font-size: 10px;
+        color: #65676b;
+        margin-top: 2px;
+      }
       .btn-clear {
         background: #fee2e2;
         color: #b91c1c;
@@ -649,61 +854,73 @@
         font-size: 9px;
         color: #65676b;
       }
+      .feedback-banner {
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #1d4ed8;
+        text-align: center;
+      }
+      .feedback-banner.success {
+        background: #f0fdf4;
+        border-color: #86efac;
+        color: #15803d;
+      }
       .actions-block {
         display: flex;
         flex-direction: column;
         gap: 6px;
       }
-      .btn-autoscroll {
+      .harvest-controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+      }
+      .btn-harvest-action {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 6px;
-        background: #0284c7;
-        color: white;
+        gap: 4px;
         border: none;
         border-radius: 8px;
-        padding: 9px 12px;
-        font-size: 12px;
-        font-weight: 700;
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-      .btn-autoscroll:hover {
-        background: #0369a1;
-      }
-      .btn-autoscroll.active {
-        background: #ea580c;
-        animation: activeGlow 1.2s infinite alternate;
-      }
-      @keyframes activeGlow {
-        from { box-shadow: 0 0 5px #ea580c; }
-        to { box-shadow: 0 0 14px #ea580c; }
-      }
-      .btn-copy-main {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        background: #25d366;
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 9px 12px;
+        padding: 10px 10px;
         font-size: 13px;
         font-weight: 700;
         cursor: pointer;
-        box-shadow: 0 2px 6px rgba(37, 211, 102, 0.35);
         transition: all 0.15s;
       }
-      .btn-copy-main:hover {
-        background: #1eb956;
+      .btn-start-master {
+        background: #0284c7;
+        color: white;
+        grid-column: span 2;
+        box-shadow: 0 2px 6px rgba(2, 132, 199, 0.35);
       }
-      .btn-copy-main:disabled {
-        background: #e4e6eb;
-        color: #8a8d91;
-        box-shadow: none;
-        cursor: not-allowed;
+      .btn-start-master:hover {
+        background: #0369a1;
+      }
+      .btn-pause-action {
+        background: #d97706;
+        color: white;
+      }
+      .btn-pause-action:hover {
+        background: #b45309;
+      }
+      .btn-resume-action {
+        background: #15803d;
+        color: white;
+      }
+      .btn-resume-action:hover {
+        background: #166534;
+      }
+      .btn-stop-action {
+        background: #dc2626;
+        color: white;
+      }
+      .btn-stop-action:hover {
+        background: #b91c1c;
       }
       .controls-row {
         display: flex;
@@ -772,25 +989,33 @@
     renderOverlayHTML();
   }
 
-  function removeFilterOverlay() {
-    const el = document.getElementById('quotefb-root');
-    if (el) el.remove();
-    rootContainer = null;
-    shadowRoot = null;
-  }
-
   function renderOverlayHTML() {
     if (!shadowRoot) return;
     const container = shadowRoot.getElementById('panel-container');
     if (!container) return;
 
-    const linkCount = state.collectedLinks.length;
+    const newLinkCount = state.collectedLinks.length;
+    const archivedCount = state.archivedLinks.length;
+
+    let statusTitle = '💬 QuoteFB WA Collector';
+    let isPausedClass = '';
+    let isScrollingClass = '';
+
+    if (state.isAutoScrolling) {
+      if (state.isPaused) {
+        statusTitle = '⏸️ Harvesting Paused';
+        isPausedClass = 'paused';
+      } else {
+        statusTitle = '⚡ Auto-Harvesting Active';
+        isScrollingClass = 'autoscrolling';
+      }
+    }
 
     if (state.widgetCollapsed) {
       container.innerHTML = `
-        <div class="panel collapsed ${state.isAutoScrolling ? 'autoscrolling' : ''}" id="btn-expand" title="QuoteFB: Click to expand">
-          <span class="collapsed-icon">${state.isAutoScrolling ? '⚡' : '💬'}</span>
-          ${linkCount > 0 ? `<span class="collapsed-badge">${linkCount}</span>` : ''}
+        <div class="panel collapsed ${isScrollingClass} ${isPausedClass}" id="btn-expand" title="QuoteFB: Click to expand">
+          <span class="collapsed-icon">${state.isPaused ? '⏸️' : state.isAutoScrolling ? '⚡' : '💬'}</span>
+          ${newLinkCount > 0 ? `<span class="collapsed-badge">${newLinkCount}</span>` : ''}
         </div>
       `;
       shadowRoot.getElementById('btn-expand')?.addEventListener('click', () => {
@@ -803,21 +1028,22 @@
 
     container.innerHTML = `
       <div class="panel">
-        <div class="header">
-          <div class="title-wrap">
-            <span>${state.isAutoScrolling ? '⚡ Auto-Scrolling Active' : '💬 QuoteFB WA Collector'}</span>
+        <div class="header ${state.isPaused ? 'paused-header' : ''}">
+          <div class="title-wrap ${state.isPaused ? 'paused-title' : ''}">
+            <span>${statusTitle}</span>
           </div>
           <button class="btn-icon" id="btn-collapse" title="Minimize">─</button>
         </div>
         <div class="body">
           <div class="collector-hero">
             <div class="collector-info">
-              <span class="collector-number" id="val-total-collected">${linkCount}</span>
-              <span class="collector-label">Unique Normalized Links</span>
+              <span class="collector-number" id="val-total-collected">${newLinkCount}</span>
+              <span class="collector-label">New Unique Links</span>
+              <span class="archived-info" id="val-archived-info">📦 ${archivedCount} previously copied</span>
             </div>
             ${
-              linkCount > 0
-                ? `<button class="btn-clear" id="btn-clear-links" title="Clear collected links and start fresh">Reset</button>`
+              newLinkCount > 0
+                ? `<button class="btn-clear" id="btn-clear-links" title="Clear current new links">Clear</button>`
                 : ''
             }
           </div>
@@ -838,25 +1064,39 @@
           </div>
 
           ${
-            state.reachedEnd
-              ? `<div style="background: #fef3c7; border: 1px solid #fde047; border-radius: 8px; padding: 6px 10px; font-size: 11px; font-weight: 700; color: #b45309; text-align: center;">
-                  🏁 Reached "End of Results"
+            state.lastActionFeedback
+              ? `<div class="feedback-banner ${state.lastActionFeedback.startsWith('✅') ? 'success' : ''}">
+                  ${state.lastActionFeedback}
                 </div>`
               : ''
           }
           
           <div class="actions-block">
-            <button class="btn-autoscroll ${state.isAutoScrolling ? 'active' : ''}" id="btn-autoscroll-toggle">
-              ${state.isAutoScrolling ? '⏹️ Stop Auto-Scroll (Esc)' : '▶️ Auto-Scroll & Grab Links'}
-            </button>
-
-            <button class="btn-copy-main" id="btn-copy-links" ${linkCount === 0 ? 'disabled' : ''}>
-              📋 Copy All ${linkCount} Clean Link${linkCount === 1 ? '' : 's'}
-            </button>
+            <div class="harvest-controls">
+              ${
+                !state.isAutoScrolling
+                  ? `<button class="btn-harvest-action btn-start-master" id="btn-start-harvest">
+                      ▶️ Start Harvesting
+                    </button>`
+                  : state.isPaused
+                  ? `<button class="btn-harvest-action btn-resume-action" id="btn-resume-harvest">
+                      ▶️ Resume (P)
+                    </button>
+                    <button class="btn-harvest-action btn-stop-action" id="btn-stop-harvest">
+                      ⏹️ Stop & Copy (Esc)
+                    </button>`
+                  : `<button class="btn-harvest-action btn-pause-action" id="btn-pause-harvest">
+                      ⏸️ Pause (P)
+                    </button>
+                    <button class="btn-harvest-action btn-stop-action" id="btn-stop-harvest">
+                      ⏹️ Stop & Copy (Esc)
+                    </button>`
+              }
+            </div>
           </div>
 
           <div class="controls-row">
-            <label class="toggle-wrap" title="Toggle WhatsApp Filter">
+            <label class="toggle-wrap" title="Toggle WhatsApp Filter (hides non-WA posts)">
               <span class="switch">
                 <input type="checkbox" id="toggle-filter" ${state.enabled ? 'checked' : ''}>
                 <span class="slider"></span>
@@ -864,7 +1104,7 @@
               <span class="toggle-label">Filter Active</span>
             </label>
 
-            <label class="toggle-wrap" title="Only keep first post per unique group link">
+            <label class="toggle-wrap" title="Hides duplicates and previously copied links">
               <span class="switch">
                 <input type="checkbox" id="toggle-unique" ${state.onlyUniqueWhatsApp ? 'checked' : ''}>
                 <span class="slider"></span>
@@ -882,8 +1122,20 @@
       renderOverlayHTML();
     });
 
-    shadowRoot.getElementById('btn-autoscroll-toggle')?.addEventListener('click', () => {
-      toggleAutoScroll();
+    shadowRoot.getElementById('btn-start-harvest')?.addEventListener('click', () => {
+      startHarvesting();
+    });
+
+    shadowRoot.getElementById('btn-pause-harvest')?.addEventListener('click', () => {
+      pauseHarvesting();
+    });
+
+    shadowRoot.getElementById('btn-resume-harvest')?.addEventListener('click', () => {
+      resumeHarvesting();
+    });
+
+    shadowRoot.getElementById('btn-stop-harvest')?.addEventListener('click', () => {
+      stopAndCopy();
     });
 
     shadowRoot.getElementById('toggle-filter')?.addEventListener('change', (e) => {
@@ -899,26 +1151,8 @@
     });
 
     shadowRoot.getElementById('btn-clear-links')?.addEventListener('click', () => {
-      if (confirm('Clear all collected WhatsApp links?')) {
-        clearAllCollectedLinks();
-      }
-    });
-
-    shadowRoot.getElementById('btn-copy-links')?.addEventListener('click', () => {
-      if (state.collectedLinks.length === 0) return;
-      // Sorted alphabetically, line by line
-      const sortedLinks = [...state.collectedLinks].sort((a, b) => a.localeCompare(b));
-      const textToCopy = sortedLinks.join('\n');
-      navigator.clipboard.writeText(textToCopy).then(() => {
-        const btn = shadowRoot.getElementById('btn-copy-links');
-        if (btn) {
-          const orig = btn.innerHTML;
-          btn.innerHTML = '✅ Copied to Clipboard!';
-          setTimeout(() => {
-            if (btn) btn.innerHTML = orig;
-          }, 2000);
-        }
-      });
+      clearAllData(false);
+      showFeedback('🗑️ Cleared new links queue');
     });
   }
 
@@ -931,39 +1165,29 @@
     }
 
     const totalCollectedEl = shadowRoot.getElementById('val-total-collected');
+    const archivedInfoEl = shadowRoot.getElementById('val-archived-info');
     const visibleEl = shadowRoot.getElementById('val-visible');
     const duplicateEl = shadowRoot.getElementById('val-duplicate');
     const nonmatchingEl = shadowRoot.getElementById('val-nonmatching');
-    const copyBtn = shadowRoot.getElementById('btn-copy-links');
-    const autoScrollBtn = shadowRoot.getElementById('btn-autoscroll-toggle');
 
-    const linkCount = state.collectedLinks.length;
+    const newLinkCount = state.collectedLinks.length;
+    const archivedCount = state.archivedLinks.length;
 
-    if (totalCollectedEl) totalCollectedEl.textContent = linkCount;
+    if (totalCollectedEl) totalCollectedEl.textContent = newLinkCount;
+    if (archivedInfoEl) archivedInfoEl.textContent = `📦 ${archivedCount} previously copied`;
     if (visibleEl) visibleEl.textContent = state.currentVisibleOnScreen;
     if (duplicateEl) duplicateEl.textContent = state.currentDuplicatesOnScreen;
     if (nonmatchingEl) nonmatchingEl.textContent = state.currentNonWAOnScreen;
-
-    if (copyBtn) {
-      copyBtn.disabled = linkCount === 0;
-      copyBtn.textContent = `📋 Copy All ${linkCount} Clean Link${linkCount === 1 ? '' : 's'}`;
-    }
-
-    if (autoScrollBtn) {
-      autoScrollBtn.className = `btn-autoscroll ${state.isAutoScrolling ? 'active' : ''}`;
-      autoScrollBtn.textContent = state.isAutoScrolling ? '⏹️ Stop Auto-Scroll (Esc)' : '▶️ Auto-Scroll & Grab Links';
-    }
   }
 
-  // --- 7. OBSERVERS & SPA ROUTING LISTENERS ---
+  // --- 7. OBSERVERS, STORAGE SYNC & SPA ROUTING LISTENERS ---
 
   function setupMutationObserver() {
     if (observer) observer.disconnect();
 
     observer = new MutationObserver(() => {
       if (window.location.href !== currentUrl) {
-        currentUrl = window.location.href;
-        scheduleScan();
+        handleUrlTransition();
         return;
       }
       scheduleScan();
@@ -975,30 +1199,64 @@
     });
   }
 
-  function setupHistoryListener() {
-    const handleUrlChange = () => {
-      if (window.location.href !== currentUrl) {
-        currentUrl = window.location.href;
-        renderOverlayHTML();
-        scheduleScan();
-      }
-    };
+  function handleUrlTransition() {
+    currentUrl = window.location.href;
+    state.reachedEnd = false;
+    stuckCounter = 0;
+    lastScrollHeight = 0;
+    
+    loadPersistentData(() => {
+      ensureFilterOverlay();
+      renderOverlayHTML();
+      scheduleScan();
+    });
+  }
 
-    window.addEventListener('popstate', handleUrlChange);
+  function setupHistoryListener() {
+    window.addEventListener('popstate', handleUrlTransition);
 
     const originalPushState = history.pushState;
     history.pushState = function () {
       originalPushState.apply(this, arguments);
-      handleUrlChange();
+      handleUrlTransition();
     };
 
     const originalReplaceState = history.replaceState;
     history.replaceState = function () {
       originalReplaceState.apply(this, arguments);
-      handleUrlChange();
+      handleUrlTransition();
     };
 
-    setInterval(handleUrlChange, 1000);
+    setInterval(() => {
+      if (window.location.href !== currentUrl) {
+        handleUrlTransition();
+      }
+    }, 1000);
+  }
+
+  // Sync when storage changes from popup or another tab
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === 'local') {
+        let needsReRender = false;
+        if (changes[STORAGE_LINKS_KEY]) {
+          state.collectedLinks = changes[STORAGE_LINKS_KEY].newValue || [];
+          needsReRender = true;
+        }
+        if (changes[STORAGE_ARCHIVED_KEY]) {
+          state.archivedLinks = changes[STORAGE_ARCHIVED_KEY].newValue || [];
+          archivedCodes.clear();
+          state.archivedLinks.forEach((url) => {
+            const parsed = normalizeWhatsAppUrl(url);
+            if (parsed) archivedCodes.add(parsed.code);
+          });
+          needsReRender = true;
+        }
+        if (needsReRender) {
+          updateOverlayUI();
+        }
+      }
+    });
   }
 
   // --- 8. MESSAGING (POPUP INTERACTION) ---
@@ -1006,7 +1264,6 @@
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === 'GET_STATUS') {
-        state.isSearchPage = checkIsSearchPage();
         state.activeQuery = getEffectiveQuery();
         sendResponse({
           ...state,
@@ -1022,11 +1279,23 @@
         renderOverlayHTML();
         filterPosts();
         sendResponse({ success: true, ...state });
-      } else if (message.type === 'TOGGLE_AUTOSCROLL') {
-        toggleAutoScroll();
+      } else if (message.type === 'START_HARVEST') {
+        startHarvesting();
         sendResponse({ success: true, ...state });
-      } else if (message.type === 'CLEAR_LINKS') {
-        clearAllCollectedLinks();
+      } else if (message.type === 'PAUSE_HARVEST') {
+        pauseHarvesting();
+        sendResponse({ success: true, ...state });
+      } else if (message.type === 'RESUME_HARVEST') {
+        resumeHarvesting();
+        sendResponse({ success: true, ...state });
+      } else if (message.type === 'STOP_AND_COPY') {
+        stopAndCopy();
+        sendResponse({ success: true, ...state });
+      } else if (message.type === 'CLEAR_CURRENT') {
+        clearAllData(false);
+        sendResponse({ success: true, ...state });
+      } else if (message.type === 'CLEAR_ALL_HISTORY') {
+        clearAllData(true);
         sendResponse({ success: true, ...state });
       }
       return true;
@@ -1036,6 +1305,7 @@
   // --- 9. INITIALIZATION ---
 
   loadPersistentData(() => {
+    ensureFilterOverlay();
     setupHistoryListener();
     setupMutationObserver();
     scheduleScan();

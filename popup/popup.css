@@ -13,6 +13,7 @@
   --card-bg: #f7f8fa;
   --danger: #dc2626;
   --danger-light: #fee2e2;
+  --amber: #d97706;
 }
 
 * {
@@ -26,7 +27,7 @@ body {
   background-color: var(--bg-color);
   color: var(--text-main);
   width: 320px;
-  min-height: 440px;
+  min-height: 460px;
   user-select: none;
 }
 
@@ -86,6 +87,11 @@ h1 {
   color: #15803d;
 }
 
+.status-indicator.paused {
+  background: #fef3c7;
+  color: #b45309;
+}
+
 .status-indicator .dot {
   width: 6px;
   height: 6px;
@@ -123,6 +129,12 @@ h1 {
   color: #166534;
 }
 
+.hero-sub {
+  font-size: 10px;
+  color: #65676b;
+  margin-top: 2px;
+}
+
 .btn-sm-danger {
   background: var(--danger-light);
   color: var(--danger);
@@ -138,31 +150,84 @@ h1 {
   background: #fecaca;
 }
 
-.btn-autoscroll-main {
+.feedback-banner {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #1d4ed8;
+  text-align: center;
+}
+
+.feedback-banner.success {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #15803d;
+}
+
+/* Master Harvest Controls */
+.harvest-master-box {
+  width: 100%;
+}
+
+.harvest-split-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.btn-harvest-master {
   width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  background: #0284c7;
-  color: white;
   border: none;
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.35);
   transition: all 0.15s;
 }
 
-.btn-autoscroll-main:hover {
+.btn-start {
+  background: #0284c7;
+  color: white;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.35);
+}
+
+.btn-start:hover {
   background: #0369a1;
 }
 
-.btn-autoscroll-main.active {
-  background: #ea580c;
-  box-shadow: 0 0 10px #ea580c;
+.btn-pause {
+  background: #d97706;
+  color: white;
+}
+
+.btn-pause:hover {
+  background: #b45309;
+}
+
+.btn-resume {
+  background: #15803d;
+  color: white;
+}
+
+.btn-resume:hover {
+  background: #166534;
+}
+
+.btn-stop {
+  background: #dc2626;
+  color: white;
+}
+
+.btn-stop:hover {
+  background: #b91c1c;
 }
 
 .actions-grid {
@@ -347,6 +412,26 @@ input[type="text"]:focus {
 .setting-desc {
   font-size: 9px;
   color: var(--text-muted);
+}
+
+.history-actions {
+  display: flex;
+  justify-content: center;
+  padding-top: 6px;
+}
+
+.btn-link-danger {
+  background: transparent;
+  border: none;
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.btn-link-danger:hover {
+  color: #991b1b;
 }
 
 /* Switch */

@@ -1,0 +1,60 @@
+/* QuoteFB CSS Rules */
+
+/* Hide non-matching search result cards completely */
+.quotefb-hidden {
+  display: none !important;
+}
+
+/* Verified exact match / unique WhatsApp post */
+.quotefb-matched {
+  position: relative;
+  transition: all 0.2s ease-in-out;
+}
+
+/* WhatsApp Link Badge attached directly onto verified post */
+.quotefb-wa-badge-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 12px;
+  padding: 6px 10px;
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  border-radius: 8px;
+  align-items: center;
+}
+
+.quotefb-wa-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #25d366;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 16px;
+  text-decoration: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  transition: background 0.15s;
+}
+
+.quotefb-wa-badge:hover {
+  background: #1eb956;
+  color: #ffffff;
+}
+
+.quotefb-wa-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #166534;
+}
+
+/* Container for QuoteFB Shadow DOM host */
+#quotefb-root {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483647; /* Maximum z-index */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}

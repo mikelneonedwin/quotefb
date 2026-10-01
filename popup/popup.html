@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuoteFB - WhatsApp Group Filter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <header class="header">
+      <div class="brand">
+        <img src="../icons/icon48.png" alt="QuoteFB" class="logo">
+        <div>
+          <h1>QuoteFB</h1>
+          <p class="subtitle">WhatsApp Group Collector</p>
+        </div>
+      </div>
+      <div class="status-indicator" id="status-badge">
+        <span class="dot"></span>
+        <span id="status-text">Detecting...</span>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <!-- Cumulative Collected Links Hero Banner -->
+      <div class="hero-card">
+        <div class="hero-left">
+          <div class="hero-number" id="count-total-collected">0</div>
+          <div class="hero-label">Unique Normalized Links</div>
+        </div>
+        <button class="btn-sm-danger" id="btn-reset-links" title="Clear all collected links">Reset</button>
+      </div>
+
+      <!-- Auto-Scroll Master Button -->
+      <button class="btn-autoscroll-main" id="btn-toggle-autoscroll">
+        ▶️ Start Auto-Scroll & Collect
+      </button>
+
+      <!-- Action Buttons -->
+      <div class="actions-grid">
+        <button class="btn-action-primary" id="btn-copy-links" disabled>
+          📋 Copy All Links
+        </button>
+        <button class="btn-action-secondary" id="btn-export-txt" disabled title="Download clean links as .txt file">
+          💾 Export .txt
+        </button>
+      </div>
+
+      <!-- Feed Counters -->
+      <div class="stats-row">
+        <div class="stat-card stat-visible">
+          <div class="stat-number" id="count-visible">0</div>
+          <div class="stat-title">On Screen</div>
+        </div>
+        <div class="stat-card stat-dupes">
+          <div class="stat-number" id="count-duplicate">0</div>
+          <div class="stat-title">Dupes Blocked</div>
+        </div>
+        <div class="stat-card stat-nonwa">
+          <div class="stat-number" id="count-nonwa">0</div>
+          <div class="stat-title">Non-WA Blocked</div>
+        </div>
+      </div>
+
+      <!-- Optional Keyword Filter -->
+      <div class="section query-section">
+        <label for="custom-query-input" class="section-label">Topic / Keyword Filter (Optional)</label>
+        <div class="input-wrapper">
+          <input type="text" id="custom-query-input" placeholder="e.g. Crypto, Jobs, Real Estate..." />
+          <button id="btn-clear-query" class="btn-sm" title="Reset keyword">↺</button>
+        </div>
+        <p class="helper-text" id="query-helper">Leave empty to collect all WhatsApp groups</p>
+      </div>
+
+      <!-- Filter Controls -->
+      <div class="section settings-section">
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-name">Filter Active</span>
+            <span class="setting-desc">Hide non-matching and duplicate posts on screen</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="toggle-enabled" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-name">Require WhatsApp Link</span>
+            <span class="setting-desc">Hide posts that lack a chat.whatsapp.com invite</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="toggle-require-wa" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <span class="setting-name">Deduplicate Links</span>
+            <span class="setting-desc">Keep only 1 post per unique WhatsApp group</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="toggle-unique" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <span>QuoteFB v1.0.0</span>
+      <a href="https://www.facebook.com/search/posts/?q=whatsapp+group+link" target="_blank" class="fb-link">Search WA on FB ↗</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -282,12 +282,10 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.tabs.sendMessage(activeTabId, { type: 'CLEAR_CURRENT' }, (res) => {
         if (res) applyStateToUI(res);
       });
-    } else if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.set({ quotefb_collected_links: [] }, () => {
-        cachedCollectedLinks = [];
-        updateCounts(0, cachedArchivedLinks.length);
-        showBanner('🗑️ Cleared new links queue');
-      });
+    } else {
+      cachedCollectedLinks = [];
+      updateCounts(0, cachedArchivedLinks.length);
+      showBanner('🗑️ Cleared new links queue');
     }
   });
 
@@ -299,8 +297,8 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     } else if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.set({
-        quotefb_collected_links: [],
         quotefb_archived_links: [],
+        quotefb_claimed_codes: {},
       }, () => {
         cachedCollectedLinks = [];
         cachedArchivedLinks = [];

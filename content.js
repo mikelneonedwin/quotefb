@@ -9,8 +9,9 @@
   window.__QUOTE_FB_LOADED__ = true;
 
   // Global persistent storage keys
-  const STORAGE_LINKS_KEY = 'quotefb_collected_links';
   const STORAGE_ARCHIVED_KEY = 'quotefb_archived_links';
+  const STORAGE_CLAIMED_KEY = 'quotefb_claimed_codes';
+  const SESSION_STORAGE_KEY = 'quotefb_session_collected_links';
 
   // In-memory state
   const state = {
@@ -33,10 +34,10 @@
     currentDuplicatesOnScreen: 0,
     currentNonWAOnScreen: 0,
     
-    // Persistent uncopied session batch across ALL Facebook pages and groups
+    // Tab-isolated uncopied session batch
     collectedLinks: [], // Array of normalized string URLs
     
-    // Permanent history of previously copied/exported links
+    // Permanent history of previously copied/exported links across all tabs
     archivedLinks: [],
     lastActionFeedback: '',
   };
@@ -52,6 +53,48 @@
 
   // --- 1. SETTINGS & PERSISTENT STORAGE ---
 
+  function saveTabSessionLinks() {
+    try {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(state.collectedLinks));
+    } catch {
+      // ignore storage quota / sandbox issues
+    }
+  }
+
+  function loadTabSessionLinks() {
+    try {
+      const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          return arr;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  }
+
+  function broadcastClaimedCodes(newCodes) {
+    if (!newCodes || newCodes.length === 0) return;
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get([STORAGE_CLAIMED_KEY], (items) => {
+        const claimed = items[STORAGE_CLAIMED_KEY] || {};
+        let changed = false;
+        newCodes.forEach((code) => {
+          if (!claimed[code]) {
+            claimed[code] = true;
+            changed = true;
+          }
+        });
+        if (changed) {
+          chrome.storage.local.set({ [STORAGE_CLAIMED_KEY]: claimed });
+        }
+      });
+    }
+  }
+
   function loadPersistentData(callback) {
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.get(
@@ -62,7 +105,7 @@
           'caseSensitive',
           'customQuery',
           'widgetCollapsed',
-          STORAGE_LINKS_KEY,
+          STORAGE_CLAIMED_KEY,
           STORAGE_ARCHIVED_KEY,
         ],
         (items) => {
@@ -73,7 +116,7 @@
           if (items.customQuery !== undefined) state.customQuery = items.customQuery;
           if (items.widgetCollapsed !== undefined) state.widgetCollapsed = items.widgetCollapsed;
 
-          // 1. Load Archived History
+          // 1. Load Archived History across all tabs
           archivedCodes.clear();
           if (Array.isArray(items[STORAGE_ARCHIVED_KEY])) {
             state.archivedLinks = items[STORAGE_ARCHIVED_KEY];
@@ -86,18 +129,25 @@
             });
           }
 
-          // 2. Load Uncopied Current Batch
-          if (Array.isArray(items[STORAGE_LINKS_KEY])) {
-            state.collectedLinks = items[STORAGE_LINKS_KEY].filter((url) => {
-              const parsed = normalizeWhatsAppUrl(url);
-              return parsed && !archivedCodes.has(parsed.code);
-            });
+          // 2. Load Global Claimed Codes (discovered by other active tabs)
+          const claimed = items[STORAGE_CLAIMED_KEY] || {};
+          Object.keys(claimed).forEach((code) => {
+            persistentSeenCodes.add(code);
+          });
 
-            state.collectedLinks.forEach((url) => {
-              const parsed = normalizeWhatsAppUrl(url);
-              if (parsed) persistentSeenCodes.add(parsed.code);
-            });
-          }
+          // 3. Load Tab-Specific Session Batch (isolated to this browser tab)
+          const sessionLinks = loadTabSessionLinks();
+          state.collectedLinks = sessionLinks.filter((url) => {
+            const parsed = normalizeWhatsAppUrl(url);
+            return parsed && !archivedCodes.has(parsed.code);
+          });
+
+          state.collectedLinks.forEach((url) => {
+            const parsed = normalizeWhatsAppUrl(url);
+            if (parsed) persistentSeenCodes.add(parsed.code);
+          });
+
+          saveTabSessionLinks();
 
           if (callback) callback();
         }
@@ -113,40 +163,18 @@
     }
   }
 
-  function persistAllData() {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.set({
-        [STORAGE_LINKS_KEY]: state.collectedLinks,
-        [STORAGE_ARCHIVED_KEY]: state.archivedLinks,
-      });
-    }
-  }
-
-  function archiveCurrentLinks() {
-    if (state.collectedLinks.length === 0) return;
-
-    state.collectedLinks.forEach((url) => {
-      const parsed = normalizeWhatsAppUrl(url);
-      if (parsed) {
-        archivedCodes.add(parsed.code);
-        persistentSeenCodes.add(parsed.code);
-        if (!state.archivedLinks.includes(url)) {
-          state.archivedLinks.push(url);
-        }
-      }
-    });
-
-    state.collectedLinks = [];
-    persistAllData();
-    filterPosts();
-    renderOverlayHTML();
-  }
-
   function clearAllData(includeArchive = false) {
     if (includeArchive) {
       archivedCodes.clear();
       state.archivedLinks = [];
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({
+          [STORAGE_ARCHIVED_KEY]: [],
+          [STORAGE_CLAIMED_KEY]: {},
+        });
+      }
     }
+
     persistentSeenCodes.clear();
     state.archivedLinks.forEach((url) => {
       const parsed = normalizeWhatsAppUrl(url);
@@ -154,7 +182,7 @@
     });
 
     state.collectedLinks = [];
-    persistAllData();
+    saveTabSessionLinks();
     filterPosts();
     renderOverlayHTML();
   }
@@ -167,7 +195,7 @@
   function checkEndOfResults() {
     const mainEl = document.querySelector('div[role="main"]') || document.querySelector('div[role="feed"]') || document.body;
     if (mainEl) {
-      const text = mainEl.innerText || '';
+      const text = mainEl.innerText || mainEl.textContent || '';
       if (
         /end of results/i.test(text) ||
         /no more results/i.test(text) ||
@@ -177,12 +205,12 @@
       }
     }
 
-    const isAtBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 150;
+    const isAtBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 200;
     const currentHeight = document.documentElement.scrollHeight;
 
     if (isAtBottom && currentHeight === lastScrollHeight) {
       stuckCounter++;
-      if (stuckCounter >= 4) {
+      if (stuckCounter >= 8) {
         return true;
       }
     } else {
@@ -205,19 +233,19 @@
     }
 
     const scrollAmount = Math.floor(window.innerHeight * 0.85);
+    // Smooth scrolling is suspended by Chromium in background tabs (document.hidden),
+    // so use instant scroll when hidden to ensure continuous harvesting.
+    const scrollBehavior = document.hidden ? 'instant' : 'smooth';
     window.scrollBy({
       top: scrollAmount,
-      behavior: 'smooth',
+      behavior: scrollBehavior,
     });
 
-    setTimeout(() => {
-      if (state.isAutoScrolling && !state.isPaused && checkEndOfResults()) {
-        state.reachedEnd = true;
-        pauseHarvesting();
-        showFeedback('🏁 Reached End of Results (Paused)');
-        return;
-      }
-    }, 600);
+    // Explicitly dispatch scroll event so Facebook's feed listeners trigger in background tabs
+    window.dispatchEvent(new Event('scroll'));
+
+    // Scan DOM for newly visible/rendered posts
+    scheduleScan();
 
     const jitter = Math.floor(Math.random() * 300) - 150;
     const nextDelay = Math.max(1200, state.scrollIntervalMs + jitter);
@@ -266,22 +294,78 @@
       autoScrollTimer = null;
     }
 
-    const countToCopy = state.collectedLinks.length;
-    if (countToCopy > 0) {
-      const sortedLinks = [...state.collectedLinks].sort((a, b) => a.localeCompare(b));
-      const textToCopy = sortedLinks.join('\n');
-      
-      navigator.clipboard.writeText(textToCopy).then(() => {
-        showFeedback(`✅ Stopped & Copied ${countToCopy} Links!`);
-        archiveCurrentLinks();
-      }).catch(() => {
-        showFeedback(`✅ Stopped (${countToCopy} Links Ready)`);
-        archiveCurrentLinks();
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get([STORAGE_ARCHIVED_KEY], (items) => {
+        const currentArchived = Array.isArray(items[STORAGE_ARCHIVED_KEY]) ? items[STORAGE_ARCHIVED_KEY] : state.archivedLinks;
+        const currentArchivedCodes = new Set();
+        currentArchived.forEach((url) => {
+          const parsed = normalizeWhatsAppUrl(url);
+          if (parsed) currentArchivedCodes.add(parsed.code);
+        });
+
+        // Filter this tab's collected links against latest global archived codes
+        const uncopiedLinks = state.collectedLinks.filter((url) => {
+          const parsed = normalizeWhatsAppUrl(url);
+          return parsed && !currentArchivedCodes.has(parsed.code);
+        });
+
+        if (uncopiedLinks.length > 0) {
+          const sortedLinks = [...uncopiedLinks].sort((a, b) => a.localeCompare(b));
+          const textToCopy = sortedLinks.join('\n');
+          
+          navigator.clipboard.writeText(textToCopy).then(() => {
+            showFeedback(`✅ Stopped & Copied ${uncopiedLinks.length} Links!`);
+            commitArchive(uncopiedLinks, currentArchived);
+          }).catch(() => {
+            showFeedback(`✅ Stopped (${uncopiedLinks.length} Links Ready)`);
+            commitArchive(uncopiedLinks, currentArchived);
+          });
+        } else {
+          state.collectedLinks = [];
+          saveTabSessionLinks();
+          showFeedback('⏹️ Stopped (No new links)');
+          renderOverlayHTML();
+        }
       });
     } else {
-      showFeedback('⏹️ Stopped (No new links)');
+      if (state.collectedLinks.length > 0) {
+        const textToCopy = [...state.collectedLinks].sort((a, b) => a.localeCompare(b)).join('\n');
+        navigator.clipboard.writeText(textToCopy).catch(() => {});
+        showFeedback(`✅ Stopped & Copied ${state.collectedLinks.length} Links!`);
+      } else {
+        showFeedback('⏹️ Stopped (No new links)');
+      }
+      state.collectedLinks = [];
+      saveTabSessionLinks();
       renderOverlayHTML();
     }
+  }
+
+  function commitArchive(newlyCopiedLinks, existingArchived) {
+    const combined = [...existingArchived];
+    newlyCopiedLinks.forEach((url) => {
+      if (!combined.includes(url)) {
+        combined.push(url);
+      }
+      const parsed = normalizeWhatsAppUrl(url);
+      if (parsed) {
+        archivedCodes.add(parsed.code);
+        persistentSeenCodes.add(parsed.code);
+      }
+    });
+
+    state.archivedLinks = combined;
+    state.collectedLinks = [];
+    saveTabSessionLinks();
+
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({
+        [STORAGE_ARCHIVED_KEY]: combined,
+      });
+    }
+
+    filterPosts();
+    renderOverlayHTML();
   }
 
   function showFeedback(text) {
@@ -585,11 +669,16 @@
         }
 
         if (!state.isPaused) {
+          const codesToClaim = [];
           freshLinks.forEach((l) => {
             persistentSeenCodes.add(l.code);
             state.collectedLinks.push(l.url);
+            codesToClaim.push(l.code);
             newlyDiscoveredLinks++;
           });
+          if (codesToClaim.length > 0) {
+            broadcastClaimedCodes(codesToClaim);
+          }
         }
 
         if (waLinks[0]) {
@@ -603,13 +692,18 @@
       } else {
         if (hasWaLink) {
           if (!state.isPaused) {
+            const codesToClaim = [];
             waLinks.forEach((l) => {
               if (!persistentSeenCodes.has(l.code)) {
                 persistentSeenCodes.add(l.code);
                 state.collectedLinks.push(l.url);
+                codesToClaim.push(l.code);
                 newlyDiscoveredLinks++;
               }
             });
+            if (codesToClaim.length > 0) {
+              broadcastClaimedCodes(codesToClaim);
+            }
           }
           attachWABadges(post, waLinks);
         }
@@ -624,7 +718,7 @@
     state.currentNonWAOnScreen = nonWaCount;
 
     if (newlyDiscoveredLinks > 0) {
-      persistAllData();
+      saveTabSessionLinks();
     }
 
     updateOverlayUI();
@@ -1239,19 +1333,39 @@
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName === 'local') {
         let needsReRender = false;
-        if (changes[STORAGE_LINKS_KEY]) {
-          state.collectedLinks = changes[STORAGE_LINKS_KEY].newValue || [];
+
+        if (changes[STORAGE_CLAIMED_KEY]) {
+          const claimed = changes[STORAGE_CLAIMED_KEY].newValue || {};
+          Object.keys(claimed).forEach((code) => {
+            persistentSeenCodes.add(code);
+          });
           needsReRender = true;
         }
+
         if (changes[STORAGE_ARCHIVED_KEY]) {
           state.archivedLinks = changes[STORAGE_ARCHIVED_KEY].newValue || [];
           archivedCodes.clear();
           state.archivedLinks.forEach((url) => {
             const parsed = normalizeWhatsAppUrl(url);
-            if (parsed) archivedCodes.add(parsed.code);
+            if (parsed) {
+              archivedCodes.add(parsed.code);
+              persistentSeenCodes.add(parsed.code);
+            }
           });
+
+          // Remove any links from this tab that have already been copied/archived by any tab
+          const originalLen = state.collectedLinks.length;
+          state.collectedLinks = state.collectedLinks.filter((url) => {
+            const parsed = normalizeWhatsAppUrl(url);
+            return parsed && !archivedCodes.has(parsed.code);
+          });
+          if (state.collectedLinks.length !== originalLen) {
+            saveTabSessionLinks();
+          }
+
           needsReRender = true;
         }
+
         if (needsReRender) {
           updateOverlayUI();
         }
@@ -1303,6 +1417,12 @@
   }
 
   // --- 9. INITIALIZATION ---
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && state.isAutoScrolling && !state.isPaused) {
+      scheduleScan();
+    }
+  });
 
   loadPersistentData(() => {
     ensureFilterOverlay();
